@@ -166,6 +166,12 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now caddy
 
 # -------------------
+# FORCE RUN THE ACME CHALLENGE (SSL issuance)
+# -------------------
+echo "[INFO] Forcing Caddy to run ACME challenge to get Let's Encrypt SSL certificate..."
+sudo caddy certs -force
+
+# -------------------
 # DIAGNOSTIC SCRIPT STARTS HERE
 # -------------------
 echo "[INFO] Starting Caddy Diagnostic Check..."
@@ -183,6 +189,14 @@ fi
 # Check Caddy status
 echo "[INFO] Checking the status of Caddy..."
 sudo systemctl status caddy
+
+# Check the Let's Encrypt certificate status
+echo "[INFO] Checking the status of Let's Encrypt certificate for $DOMAIN..."
+if [ -f "/etc/letsencrypt/live/$DOMAIN/fullchain.pem" ]; then
+    echo "[INFO] Let's Encrypt SSL certificate found for $DOMAIN."
+else
+    echo "[ERROR] SSL certificate not found for $DOMAIN."
+fi
 
 # -------------------
 # Final Status
