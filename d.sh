@@ -1,114 +1,207 @@
 #!/bin/bash
-
-# ================================================
-# Fix Apache SSL and Install Let's Encrypt Certificate
-# ================================================
+# ===============================================
+# Caddy Setup Script: Reverse Proxy + SSL (Let's Encrypt)
+# ===============================================
 
 set -e
 
-# Variables
+# -------------------
+# USER CONFIGURATION
+# -------------------
 DOMAIN="sahmcore.com.sa"
-WEB_ROOT="/var/www/html"
-CERTBOT_EMAIL="admin@$DOMAIN"
-APACHE_CONF="/etc/apache2/sites-available/sahmcore.com.sa.conf"
-SSL_CONF="/etc/apache2/sites-available/sahmcore-ssl.conf"  # This will be the new SSL conf file
-LETS_ENCRYPT_PATH="/etc/letsencrypt/live/$DOMAIN"
-CERTBOT_PATH="/usr/bin/certbot"
+ADMIN_EMAIL="a.saeed@$DOMAIN"
+# Internal VM IPs
+ERP_IP="192.168.116.13"
+ERP_PORT="8069"
+DOCS_IP="192.168.116.1"
+DOCS_PORT="9443"
+MAIL_IP="192.168.116.1"
+MAIL_PORT="444"
+NOMOGROW_IP="192.168.116.48"
+NOMOGROW_PORT="8082"
+VENTURA_IP="192.168.116.10"
+VENTURA_PORT="8080"
 
-# Step 1: Disable SSL Configuration Temporarily
-echo "[INFO] Disabling SSL configuration temporarily..."
+# -------------------
+# SYSTEM UPDATE & DEPENDENCIES
+# -------------------
+echo "[INFO] Updating system and installing dependencies..."
+sudo apt update && sudo apt upgrade -y
+sudo apt install -y curl wget unzip lsb-release software-properties-common net-tools ufw dnsutils git mariadb-client mariadb-server
 
-# Backup the Apache config file
-cp $APACHE_CONF ${APACHE_CONF}.bak
-
-# Comment out SSL-related lines to prevent configtest errors
-sed -i 's/SSLEngine on/#SSLEngine on/' $APACHE_CONF
-sed -i 's|SSLCertificateFile /etc/letsencrypt/live/$DOMAIN/cert.pem|#SSLCertificateFile /etc/letsencrypt/live/$DOMAIN/cert.pem|' $APACHE_CONF
-sed -i 's|SSLCertificateKeyFile /etc/letsencrypt/live/$DOMAIN/privkey.pem|#SSLCertificateKeyFile /etc/letsencrypt/live/$DOMAIN/privkey.pem|' $APACHE_CONF
-sed -i 's|SSLCertificateChainFile /etc/letsencrypt/live/$DOMAIN/chain.pem|#SSLCertificateChainFile /etc/letsencrypt/live/$DOMAIN/chain.pem|' $APACHE_CONF
-
-# Step 2: Disable SSL Site Config Temporarily (If Exists)
-echo "[INFO] Disabling SSL site config..."
-if [ -f "/etc/apache2/sites-available/000-default-ssl.conf" ]; then
-    sudo a2dissite 000-default-ssl.conf
+# -------------------
+# CADDY INSTALLATION
+# -------------------
+echo "[INFO] Installing Caddy..."
+if ! command -v caddy >/dev/null 2>&1; then
+    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | sudo tee /etc/apt/sources.list.d/caddy-stable.list
+    sudo apt update
+    sudo apt install -y caddy
 fi
 
-# Step 3: Run Apache configtest
-echo "[INFO] Running Apache configtest..."
-sudo apache2ctl configtest
+# -------------------
+# STOP OTHER WEB SERVERS
+# -------------------
+sudo systemctl stop apache2 nginx 2>/dev/null || true
+sudo systemctl disable apache2 nginx 2>/dev/null || true
+sudo systemctl mask apache2 nginx  # Ensure Apache and Nginx do not restart
 
-# Step 4: Restart Apache to apply non-SSL changes
-echo "[INFO] Restarting Apache to apply changes..."
-sudo systemctl restart apache2
+# -------------------
+# CREATE CADDYFILE
+# -------------------
+echo "[INFO] Creating Caddyfile for reverse proxy and SSL..."
+sudo tee /etc/caddy/Caddyfile > /dev/null << EOF
+# WordPress site $DOMAIN, www.$DOMAIN
+$DOMAIN, www.$DOMAIN {
+    root * /var/www/html  # Assuming WordPress is already installed here
+    php_fastcgi unix:/run/php/php8.3-fpm.sock  # Update for your PHP version
+    file_server
+    encode gzip zstd
+    log {
+        output file /var/log/caddy/wordpress.log
+    }
+    header {
+        X-Frame-Options "SAMEORIGIN"
+        X-Content-Type-Options "nosniff"
+        X-XSS-Protection "1; mode=block"
+        Referrer-Policy "strict-origin-when-cross-origin"
+    }
 
-# Step 5: Install/renew SSL certificates using Certbot
-echo "[INFO] Installing or renewing SSL certificates using Certbot..."
+    # SSL (Let's Encrypt automatic)
+    tls $ADMIN_EMAIL
 
-# Run Certbot to get SSL certificates for the domain
-sudo certbot --apache -d $DOMAIN -d www.$DOMAIN --email $CERTBOT_EMAIL --agree-tos --no-eff-email --redirect
+    # Redirect HTTP to HTTPS
+    redir https://{host}{uri} permanent
+}
 
-# Check if Certbot was successful
-if [ $? -ne 0 ]; then
-  echo "[ERROR] Certbot failed to obtain a certificate. Please check the errors above."
-  exit 1
-fi
+# ERP Reverse Proxy
+erp.$DOMAIN {
+    reverse_proxy http://$ERP_IP:$ERP_PORT {
+        header_up Host {host}
+        header_up X-Forwarded-Proto {scheme}
+        header_up X-Forwarded-For {remote}
+    }
+    log {
+        output file /var/log/caddy/erp.log
+    }
+    tls $ADMIN_EMAIL
+}
 
-# Step 6: Create SSL Configuration File (if it doesn't exist)
-echo "[INFO] Creating SSL configuration file..."
+# Documentation Reverse Proxy
+docs.$DOMAIN {
+    reverse_proxy https://$DOCS_IP:$DOCS_PORT {
+        transport http {
+            tls_insecure_skip_verify
+        }
+        header_up Host {host}
+        header_up X-Forwarded-Proto {scheme}
+        header_up X-Forwarded-For {remote}
+    }
+    log {
+        output file /var/log/caddy/docs.log
+    }
+    tls $ADMIN_EMAIL
+}
 
-# Create the SSL virtual host configuration file
-sudo tee $SSL_CONF > /dev/null <<EOF
-<VirtualHost *:443>
-    ServerName $DOMAIN
-    DocumentRoot $WEB_ROOT
-    SSLEngine on
-    SSLCertificateFile /etc/letsencrypt/live/$DOMAIN/cert.pem
-    SSLCertificateKeyFile /etc/letsencrypt/live/$DOMAIN/privkey.pem
-    SSLCertificateChainFile /etc/letsencrypt/live/$DOMAIN/chain.pem
+# Mail Reverse Proxy
+mail.$DOMAIN {
+    reverse_proxy https://$MAIL_IP:$MAIL_PORT {
+        transport http {
+            tls_insecure_skip_verify
+        }
+        header_up Host {host}
+        header_up X-Forwarded-Proto {scheme}
+        header_up X-Forwarded-For {remote}
+    }
+    log {
+        output file /var/log/caddy/mail.log
+    }
+    tls $ADMIN_EMAIL
+}
 
-    # Additional SSL settings
-    SSLProtocol all -SSLv2 -SSLv3
-    SSLCipherSuite HIGH:!aNULL:!MD5
-    SSLHonorCipherOrder on
+# Nomogrow Reverse Proxy
+nomogrow.$DOMAIN {
+    reverse_proxy http://$NOMOGROW_IP:$NOMOGROW_PORT {
+        header_up Host {host}
+        header_up X-Forwarded-Proto {scheme}
+        header_up X-Forwarded-For {remote}
+    }
+    log {
+        output file /var/log/caddy/nomogrow.log
+    }
+    tls $ADMIN_EMAIL
+}
 
-    # Custom Logging
-    LogLevel warn
-    CustomLog /var/log/apache2/$DOMAIN-access.log combined
-    ErrorLog /var/log/apache2/$DOMAIN-error.log
+# Ventura-Tech Reverse Proxy
+ventura-tech.$DOMAIN {
+    reverse_proxy http://$VENTURA_IP:$VENTURA_PORT {
+        header_up Host {host}
+        header_up X-Forwarded-Proto {scheme}
+        header_up X-Forwarded-For {remote}
+    }
+    log {
+        output file /var/log/caddy/ventura-tech.log
+    }
+    tls $ADMIN_EMAIL
+}
 
-    # Additional security headers
-    Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
-</VirtualHost>
+# HTTP redirect to HTTPS for debugging
+http://$DOMAIN, http://www.$DOMAIN, http://erp.$DOMAIN, http://docs.$DOMAIN, http://mail.$DOMAIN, http://nomogrow.$DOMAIN, http://ventura-tech.$DOMAIN {
+    redir https://{host}{uri} permanent
+}
 EOF
 
-# Step 7: Enable the SSL Site Configuration
-echo "[INFO] Enabling SSL site configuration..."
+# -------------------
+# FIREWALL SETUP
+# -------------------
+sudo ufw --force reset
+sudo ufw default deny incoming
+sudo ufw default allow outgoing
+sudo ufw allow 22/tcp
+sudo ufw allow 80/tcp    # Allow HTTP for Let's Encrypt
+sudo ufw allow 443/tcp
+sudo ufw enable
 
-sudo a2ensite $SSL_CONF
+# -------------------
+# START SERVICES
+# -------------------
+echo "[INFO] Enabling and starting services..."
+sudo systemctl daemon-reload
+sudo systemctl enable --now caddy
 
-# Step 8: Enable SSL Module
-echo "[INFO] Enabling SSL module..."
-sudo a2enmod ssl
+# -------------------
+# DIAGNOSTIC SCRIPT STARTS HERE
+# -------------------
+echo "[INFO] Starting Caddy + Reverse Proxy Diagnostic Check..."
 
-# Step 9: Run Apache configtest again to check the configuration
-echo "[INFO] Running Apache configtest again to verify SSL settings..."
-sudo apache2ctl configtest
-
-# Step 10: Restart Apache to apply SSL changes
-echo "[INFO] Restarting Apache to apply SSL configuration..."
-sudo systemctl restart apache2
-
-# Step 11: Verify SSL Installation
-echo "[INFO] Verifying SSL certificate installation..."
-if [ -d "$LETS_ENCRYPT_PATH" ]; then
-  echo "[INFO] SSL certificate installed successfully. Certificate path: $LETS_ENCRYPT_PATH"
+# Check if Caddy is running
+echo "[INFO] Checking if Caddy is running..."
+if systemctl is-active --quiet caddy; then
+    echo "[INFO] Caddy is running."
 else
-  echo "[ERROR] SSL certificate installation failed. No certificate found at $LETS_ENCRYPT_PATH"
-  exit 1
+    echo "[ERROR] Caddy is NOT running. Starting Caddy..."
+    sudo systemctl start caddy
+    sudo systemctl enable caddy
 fi
 
-# Step 12: Automatic Renewal Setup (Certbot should already set this up)
-echo "[INFO] Testing Certbot renewal..."
-sudo certbot renew --dry-run
+# Check the Caddy status
+echo "[INFO] Checking the status of Caddy..."
+sudo systemctl status caddy
 
-echo "[INFO] SSL certificate installation and Apache configuration complete."
+# -------------------
+# Final Status
+# -------------------
+echo ""
+echo "==============================================="
+echo "Caddy Setup Complete!"
+echo "==============================================="
+echo "WordPress should now be accessible at https://$DOMAIN"
+echo "ERP: https://erp.$DOMAIN"
+echo "Docs: https://docs.$DOMAIN"
+echo "Mail: https://mail.$DOMAIN"
+echo "Nomogrow: https://nomogrow.$DOMAIN"
+echo "Ventura-Tech: https://ventura-tech.$DOMAIN"
+echo "SSL certificates are managed automatically by Let's Encrypt."
+echo "==============================================="
+
