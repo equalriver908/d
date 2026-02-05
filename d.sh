@@ -23,32 +23,26 @@ VENTURA_IP="192.168.116.10"
 VENTURA_PORT="8080"
 
 # -------------------
-# SYSTEM UPDATE & DEPENDENCIES
-# -------------------
-echo "[INFO] Updating system and installing dependencies..."
-sudo apt update && sudo apt upgrade -y
-sudo apt install -y curl wget unzip lsb-release software-properties-common net-tools ufw dnsutils git mariadb-client mariadb-server
-
-# -------------------
-# CADDY INSTALLATION
+# CADDY INSTALLATION (no system update)
 # -------------------
 echo "[INFO] Installing Caddy..."
 if ! command -v caddy >/dev/null 2>&1; then
     curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
     curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | sudo tee /etc/apt/sources.list.d/caddy-stable.list
-    sudo apt update
     sudo apt install -y caddy
+else
+    echo "[INFO] Caddy is already installed."
 fi
 
 # -------------------
-# STOP OTHER WEB SERVERS
+# STOP OTHER WEB SERVERS (apache2 and nginx)
 # -------------------
 sudo systemctl stop apache2 nginx 2>/dev/null || true
 sudo systemctl disable apache2 nginx 2>/dev/null || true
 sudo systemctl mask apache2 nginx  # Ensure Apache and Nginx do not restart
 
 # -------------------
-# CREATE CADDYFILE
+# CREATE CADDYFILE (Reverse Proxy + SSL for the services)
 # -------------------
 echo "[INFO] Creating Caddyfile for reverse proxy and SSL..."
 sudo tee /etc/caddy/Caddyfile > /dev/null << EOF
@@ -153,27 +147,28 @@ http://$DOMAIN, http://www.$DOMAIN, http://erp.$DOMAIN, http://docs.$DOMAIN, htt
 EOF
 
 # -------------------
-# FIREWALL SETUP
+# FIREWALL SETUP (Allow HTTP and HTTPS traffic)
 # -------------------
+echo "[INFO] Configuring firewall..."
 sudo ufw --force reset
 sudo ufw default deny incoming
 sudo ufw default allow outgoing
-sudo ufw allow 22/tcp
-sudo ufw allow 80/tcp    # Allow HTTP for Let's Encrypt
-sudo ufw allow 443/tcp
+sudo ufw allow 22/tcp  # SSH
+sudo ufw allow 80/tcp  # HTTP (for Let's Encrypt)
+sudo ufw allow 443/tcp # HTTPS
 sudo ufw enable
 
 # -------------------
-# START SERVICES
+# START CADDY
 # -------------------
-echo "[INFO] Enabling and starting services..."
+echo "[INFO] Starting Caddy..."
 sudo systemctl daemon-reload
 sudo systemctl enable --now caddy
 
 # -------------------
 # DIAGNOSTIC SCRIPT STARTS HERE
 # -------------------
-echo "[INFO] Starting Caddy + Reverse Proxy Diagnostic Check..."
+echo "[INFO] Starting Caddy Diagnostic Check..."
 
 # Check if Caddy is running
 echo "[INFO] Checking if Caddy is running..."
@@ -185,7 +180,7 @@ else
     sudo systemctl enable caddy
 fi
 
-# Check the Caddy status
+# Check Caddy status
 echo "[INFO] Checking the status of Caddy..."
 sudo systemctl status caddy
 
@@ -204,4 +199,3 @@ echo "Nomogrow: https://nomogrow.$DOMAIN"
 echo "Ventura-Tech: https://ventura-tech.$DOMAIN"
 echo "SSL certificates are managed automatically by Let's Encrypt."
 echo "==============================================="
-
