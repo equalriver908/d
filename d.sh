@@ -136,12 +136,7 @@ ventura-tech.$DOMAIN {
         output file /var/log/caddy/ventura-tech.log
     }
     tls $ADMIN_EMAIL
-}
 
-# HTTP redirect to HTTPS for debugging
-http://$DOMAIN, http://www.$DOMAIN, http://erp.$DOMAIN, http://docs.$DOMAIN, http://mail.$DOMAIN, http://nomogrow.$DOMAIN, http://ventura-tech.$DOMAIN {
-    redir https://{host}{uri} permanent
-}
 EOF
 
 # -------------------
