@@ -65,8 +65,6 @@ $DOMAIN, www.$DOMAIN {
     # SSL (Let's Encrypt automatic)
     tls $ADMIN_EMAIL
 
-    # Redirect HTTP to HTTPS
-    redir https://{host}{uri} permanent
 }
 
 # ERP Reverse Proxy
